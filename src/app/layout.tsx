@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Amazon Scheduling Processor",
-  description: "Upload and analyze Excel files with beautiful visualizations",
+  description: "Upload and analyze Scheduling files",
   keywords: ["Excel", "Data Processor", "File Upload", "Analytics"],
   authors: [{ name: "Zohaib Team" }],
   icons: {
