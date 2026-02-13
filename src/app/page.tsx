@@ -708,7 +708,7 @@ export default function Home() {
             Your Excel Files
           </h1>
           <p className="text-slate-400 max-w-xl mx-auto">
-            Drag and drop your Excel files to extract and filter data with beautiful visualizations
+            Drag and drop your Scheduling files for visualizations
           </p>
         </motion.header>
         
