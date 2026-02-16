@@ -6,75 +6,25 @@ import { motion, AnimatePresence } from 'framer-motion';
 import * as XLSX from 'xlsx';
 
 // ============================================
-// 1. DEFAULT FILTER CONFIGURATION
-// ============================================
-const DEFAULT_FILTER_STATE = {
-  excludeDSPInitiated: {
-    id: 'excludeDSPInitiated',
-    name: 'Exclude "DSP Initiated Work*"',
-    description: 'Filters cells starting with "DSP Initiated Work"',
-    active: true,
-    type: 'builtin',
-    fn: (value) => {
-      const str = String(value || '').toLowerCase().trim();
-      return !str.startsWith('dsp initiated work');
-    }
-  },
-  excludeBlank: {
-    id: 'excludeBlank',
-    name: 'Exclude Blank Cells',
-    description: 'Filters out empty or blank cells',
-    active: true,
-    type: 'builtin',
-    fn: (value) => {
-      if (value === null || value === undefined) return false;
-      return String(value).trim() !== '';
-    }
-  },
-  excludeNumeric: {
-    id: 'excludeNumeric',
-    name: 'Exclude Numeric Values',
-    description: 'Filters out pure numbers (e.g., 123, 45.67)',
-    active: true,
-    type: 'builtin',
-    fn: (value) => {
-      const str = String(value).trim();
-      if (str === '') return true; // Let excludeBlank handle empty
-      return isNaN(Number(str));
-    }
-  }
-};
-
-// ============================================
-// 2. UTILITY FUNCTIONS
+// 1. UTILITY FUNCTIONS
 // ============================================
 
-// Main filtering logic
-// 1. Checks Built-in filters
-// 2. Checks Word Filter (if active)
-const applyFilters = (value, filters, wordFilterState) => {
-  // 1. Apply Built-in Filters
-  const activeFilters = Object.values(filters).filter(f => f.active);
-  const passesBuiltin = activeFilters.every(filter => filter.fn(value));
-  if (!passesBuiltin) return false;
-
-  // 2. Apply Word Filter (Excel-like logic)
-  const cellValueStr = String(value || '').toLowerCase().trim();
+// Helper to determine if a word is "Bad" data (DSP, Numeric, Blank)
+const isDefaultExcluded = (word) => {
+  // 1. Check Blank
+  if (word === '__BLANK__') return true;
   
-  // If we have a word filter state initialized
-  if (wordFilterState && Object.keys(wordFilterState).length > 0) {
-    // If the word is in our list, check if it's checked (true)
-    if (cellValueStr in wordFilterState) {
-      return wordFilterState[cellValueStr]; // Return true (keep) or false (exclude)
-    }
-    // If the word is NOT in our list (e.g., new data not yet parsed?), default to true
-    return true;
-  }
+  // 2. Check Numeric
+  // We check if the original string is a number
+  if (!isNaN(Number(word)) && word.trim() !== '') return true;
 
-  return true;
+  // 3. Check DSP Initiated
+  if (word.toLowerCase().startsWith('dsp initiated work')) return true;
+
+  return false;
 };
 
-const parseExcelFile = async (file) => {
+const parseExcelFile = (file) => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -100,8 +50,8 @@ const extractFileInfo = (jsonData) => {
   return { companyName, stationName };
 };
 
-// Function to extract all unique words from the data
-const extractUniqueWords = (jsonData, filters) => {
+// Extract ALL unique words (no filtering applied here)
+const extractUniqueWords = (jsonData) => {
   const uniqueWords = new Set();
   
   if (jsonData.length < 4) return [];
@@ -110,22 +60,22 @@ const extractUniqueWords = (jsonData, filters) => {
     for (let rowIndex = 4; rowIndex < jsonData.length; rowIndex++) {
       const cellValue = jsonData[rowIndex]?.[colIndex];
       
-      // Apply only built-in filters to gather the "pool" of words
-      const activeFilters = Object.values(filters).filter(f => f.active);
-      const passesBuiltin = activeFilters.every(filter => filter.fn(cellValue));
+      let word = String(cellValue || '').trim();
       
-      if (passesBuiltin) {
-        const word = String(cellValue || '').toLowerCase().trim();
-        if (word) uniqueWords.add(word);
+      // Handle Blanks as a specific key
+      if (word === '') {
+        word = '__BLANK__';
       }
+      
+      uniqueWords.add(word);
     }
   }
 
-  // Return sorted array
   return Array.from(uniqueWords).sort();
 };
 
-const processExcelData = (jsonData, filters, wordFilterState) => {
+// Process data based strictly on the Word Filter State
+const processExcelData = (jsonData, wordFilterState) => {
   if (jsonData.length < 4) return { counts: [] };
   
   const dateRow = jsonData[3] || [];
@@ -138,9 +88,14 @@ const processExcelData = (jsonData, filters, wordFilterState) => {
       
       for (let rowIndex = 4; rowIndex < jsonData.length; rowIndex++) {
         const cellValue = jsonData[rowIndex]?.[colIndex];
+        let word = String(cellValue || '').trim();
+        if (word === '') word = '__BLANK__';
+
+        // Logic: If word is in filter state, use that value. 
+        // If not in filter state (shouldn't happen often), default to true (include).
+        const isAllowed = wordFilterState[word] !== false;
         
-        // Apply both built-in and word filters
-        if (applyFilters(cellValue, filters, wordFilterState)) {
+        if (isAllowed) {
           count++;
         }
       }
@@ -169,8 +124,14 @@ const formatDate = (dateValue) => {
   return String(dateValue);
 };
 
+// Helper to format word for display
+const formatWordLabel = (word) => {
+  if (word === '__BLANK__') return '[Blank Cell]';
+  return word;
+};
+
 // ============================================
-// 3. COMPONENTS
+// 2. COMPONENTS
 // ============================================
 
 const AnimatedBackground = () => (
@@ -191,44 +152,63 @@ const AnimatedBackground = () => (
   </div>
 );
 
-// Modal with Word Filter List
+const CheckboxItem = ({ label, checked, onChange }) => (
+  <div 
+    onClick={onChange}
+    className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-all select-none ${
+      checked 
+        ? 'bg-emerald-500/10 border-emerald-500/30 hover:border-emerald-400' 
+        : 'bg-slate-800/50 border-slate-700 hover:border-slate-500'
+    }`}
+  >
+    <div className={`mt-0.5 w-5 h-5 rounded flex items-center justify-center border transition-colors ${
+      checked ? 'bg-emerald-500 border-emerald-500' : 'border-slate-500 bg-slate-900'
+    }`}>
+      {checked && (
+        <motion.svg 
+          initial={{ scale: 0 }} 
+          animate={{ scale: 1 }} 
+          className="w-3 h-3 text-white" 
+          fill="none" stroke="currentColor" viewBox="0 0 24 24"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+        </motion.svg>
+      )}
+    </div>
+    <div className="flex-1">
+      <div className={`text-sm font-medium ${checked ? 'text-white' : 'text-slate-400'}`}>
+        {label}
+      </div>
+    </div>
+  </div>
+);
+
 const FilterConfigModal = ({ 
   isOpen, 
   onClose, 
-  filterState, 
-  setFilterState, 
   wordFilterState, 
   setWordFilterState,
   uniqueWords 
 }) => {
-  
   const [searchTerm, setSearchTerm] = useState('');
 
-  const toggleFilter = (id) => {
-    setFilterState(prev => ({
-      ...prev,
-      [id]: { ...prev[id], active: !prev[id].active }
-    }));
-  };
-
-  // Toggle a specific word in the filter state
   const toggleWord = (word) => {
     setWordFilterState(prev => ({
       ...prev,
-      [word]: prev[word] === undefined ? false : !prev[word] // Toggle between true/false
+      [word]: prev[word] === undefined ? false : !prev[word]
     }));
   };
 
-  // Select All / Clear All for words
-  const setAllWords = (status) => {
-    const newState = {};
+  const setAllVisible = (status) => {
+    const newWordState = { ...wordFilterState };
     uniqueWords.forEach(word => {
-      newState[word] = status;
+      if (searchTerm === '' || word.includes(searchTerm.toLowerCase())) {
+        newWordState[word] = status;
+      }
     });
-    setWordFilterState(newState);
+    setWordFilterState(newWordState);
   };
 
-  // Filter displayed words based on search
   const filteredWords = uniqueWords.filter(word => word.includes(searchTerm.toLowerCase()));
 
   if (!isOpen) return null;
@@ -250,114 +230,69 @@ const FilterConfigModal = ({
       >
         <div className="p-6 border-b border-slate-700 bg-slate-800/50">
           <div className="flex justify-between items-center">
-            <h2 className="text-xl font-bold text-white">Filter Configuration</h2>
-            <button onClick={onClose} className="text-slate-400 hover:text-white">
-              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div>
+              <h2 className="text-xl font-bold text-white">Filter Configuration</h2>
+              <p className="text-sm text-slate-400 mt-1">Uncheck items to exclude them from the count.</p>
+            </div>
+            <button onClick={onClose} className="text-slate-400 hover:text-white p-2 hover:bg-slate-700 rounded-full">
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
               </svg>
             </button>
           </div>
-          <p className="text-sm text-slate-400 mt-1">Toggle standard filters or specific words below.</p>
         </div>
 
-        <div className="p-6 space-y-6 overflow-y-auto flex-1">
-          {/* Built-in Filters */}
-          <div>
-            <h3 className="text-sm font-semibold text-slate-300 mb-3 uppercase tracking-wider">Standard Filters</h3>
-            <div className="space-y-3">
-              {Object.values(filterState).map(filter => (
-                <motion.div 
-                  key={filter.id}
-                  className={`flex items-center justify-between p-3 rounded-lg border transition-colors ${
-                    filter.active ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-slate-800/50 border-slate-700'
-                  }`}
-                  layout
-                >
-                  <div>
-                    <h4 className="font-medium text-white">{filter.name}</h4>
-                    <p className="text-xs text-slate-400">{filter.description}</p>
-                  </div>
-                  <button 
-                    onClick={() => toggleFilter(filter.id)}
-                    className={`w-12 h-6 rounded-full p-1 transition-colors ${
-                      filter.active ? 'bg-emerald-500' : 'bg-slate-600'
-                    }`}
-                  >
-                    <motion.div
-                      className="w-4 h-4 bg-white rounded-full"
-                      animate={{ x: filter.active ? 24 : 0 }}
-                      transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-                    />
-                  </button>
-                </motion.div>
-              ))}
-            </div>
-          </div>
-
-          {/* Word Filter List (Excel Style) */}
-          <div>
-            <div className="flex justify-between items-center mb-3">
-              <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">
-                Word Filter ({uniqueWords.length} unique words)
-              </h3>
-              <div className="flex gap-2">
-                <button 
-                  onClick={() => setAllWords(true)}
-                  className="text-xs px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded text-slate-300"
-                >
-                  Check All
-                </button>
-                <button 
-                  onClick={() => setAllWords(false)}
-                  className="text-xs px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded text-slate-300"
-                >
-                  Uncheck All
-                </button>
-              </div>
-            </div>
-
-            {/* Search Input */}
-            <input
+        <div className="p-6 space-y-4 overflow-y-auto flex-1">
+          
+          <div className="flex justify-between items-center gap-4">
+             <input
               type="text"
               placeholder="Search words..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full bg-slate-800 border border-slate-600 rounded-lg px-4 py-2 mb-3 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 text-sm"
+              className="flex-1 bg-slate-800 border border-slate-600 rounded-lg px-4 py-2 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 text-sm"
             />
-
-            {/* Word List Container */}
-            <div className="bg-slate-800/30 border border-slate-700 rounded-lg p-3 max-h-60 overflow-y-auto space-y-1">
-              {filteredWords.length === 0 ? (
-                <p className="text-slate-500 text-sm text-center py-4">No words found or loaded.</p>
-              ) : (
-                filteredWords.map(word => {
-                  const isActive = wordFilterState[word] !== false; // Default true
-                  return (
-                    <motion.div 
-                      key={word}
-                      onClick={() => toggleWord(word)}
-                      className={`flex items-center gap-3 p-2 rounded cursor-pointer transition-colors ${
-                        isActive ? 'bg-slate-700/50 hover:bg-slate-700' : 'bg-slate-900/50 hover:bg-slate-800 opacity-60'
-                      }`}
-                      whileTap={{ scale: 0.98 }}
-                    >
-                      <div className={`w-4 h-4 rounded border flex items-center justify-center ${isActive ? 'bg-emerald-500 border-emerald-500' : 'border-slate-500'}`}>
-                        {isActive && (
-                          <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                          </svg>
-                        )}
-                      </div>
-                      <span className="text-sm text-slate-200 capitalize">{word}</span>
-                    </motion.div>
-                  );
-                })
-              )}
+            <div className="flex gap-2 flex-shrink-0">
+              <button 
+                onClick={() => setAllVisible(true)}
+                className="text-xs px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded text-slate-300 transition-colors whitespace-nowrap"
+              >
+                Check All
+              </button>
+              <button 
+                onClick={() => setAllVisible(false)}
+                className="text-xs px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded text-slate-300 transition-colors whitespace-nowrap"
+              >
+                Uncheck All
+              </button>
             </div>
-            <p className="text-xs text-slate-500 mt-2 italic">
-              Unchecked words will be excluded from the count calculation.
-            </p>
           </div>
+
+          <div className="bg-slate-800/30 border border-slate-700 rounded-lg p-2 space-y-1 max-h-96 overflow-y-auto">
+            {filteredWords.length === 0 && uniqueWords.length > 0 ? (
+              <p className="text-slate-500 text-sm text-center py-4">No words match search.</p>
+            ) : uniqueWords.length === 0 ? (
+              <p className="text-slate-500 text-sm text-center py-4">Upload a file to see words.</p>
+            ) : (
+              filteredWords.map(word => {
+                // Default to true (checked) if not in state, UNLESS it's a default excluded type
+                // But our initialization logic handles the default value, so we just read state.
+                const isActive = wordFilterState[word] !== false; 
+                return (
+                  <CheckboxItem
+                    key={word}
+                    label={formatWordLabel(word)}
+                    checked={isActive}
+                    onChange={() => toggleWord(word)}
+                  />
+                );
+              })
+            )}
+          </div>
+          
+          <p className="text-xs text-slate-500 italic">
+            Note: Items like "DSP Initiated Work", Numbers, and Blanks are unchecked by default.
+          </p>
         </div>
 
         <div className="p-4 bg-slate-800/50 border-t border-slate-700 flex justify-end">
@@ -484,36 +419,24 @@ const FileCard = ({ fileData, onRemove, onOpenSettings }) => (
 );
 
 // ============================================
-// 4. MAIN PAGE
+// 3. MAIN PAGE
 // ============================================
 export default function Home() {
   const [files, setFiles] = useState([]);
   const [isDragging, setIsDragging] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   
-  // Filter States
-  const [filterState, setFilterState] = useState(DEFAULT_FILTER_STATE);
-  
-  // Word Filter State: { "word": true/false, ... }
   const [wordFilterState, setWordFilterState] = useState({});
-  
-  // List of all unique words found in files
   const [uniqueWords, setUniqueWords] = useState([]);
 
-  // Process files when uploaded
   const processAndAddFiles = useCallback(async (selectedFiles) => {
     const newFiles = [];
-    let allWords = new Set(uniqueWords);
 
     for (const file of selectedFiles) {
       try {
         const jsonData = await parseExcelFile(file);
         const { companyName, stationName } = extractFileInfo(jsonData);
         
-        // Extract unique words from this file
-        const fileWords = extractUniqueWords(jsonData, filterState);
-        fileWords.forEach(w => allWords.add(w));
-
         newFiles.push({
           id: `${file.name}-${Date.now()}`,
           fileName: file.name,
@@ -528,38 +451,48 @@ export default function Home() {
       }
     }
 
-    // Update unique words list
-    const sortedWords = Array.from(allWords).sort();
-    setUniqueWords(sortedWords);
+    setFiles(prev => [...prev, ...newFiles]);
 
-    // Initialize word filter state for new words (default true)
-    setWordFilterState(prev => {
-      const newState = { ...prev };
-      sortedWords.forEach(word => {
-        if (newState[word] === undefined) {
-          newState[word] = true; // Checked by default
+    // Update Unique Words List
+    setUniqueWords(prevWords => {
+      const allWords = new Set(prevWords);
+      
+      newFiles.forEach(file => {
+        if (file.rawData) {
+            const fileWords = extractUniqueWords(file.rawData);
+            fileWords.forEach(w => allWords.add(w));
         }
       });
-      return newState;
+
+      const sortedWords = Array.from(allWords).sort();
+
+      // Initialize State: Default Excluded (false) for bad items, Included (true) for others
+      setWordFilterState(prevFilter => {
+        const newState = { ...prevFilter };
+        sortedWords.forEach(word => {
+          if (newState[word] === undefined) {
+            // Check if it's a "bad" type to set default unchecked
+            newState[word] = !isDefaultExcluded(word);
+          }
+        });
+        return newState;
+      });
+
+      return sortedWords;
     });
 
-    setFiles(prev => [...prev, ...newFiles]);
-    setIsModalOpen(true); // Open modal to let user see filters
-  }, [filterState, uniqueWords]);
+    setIsModalOpen(true);
+    
+  }, []);
 
-  // Recalculate counts whenever filters or files change
-  const updateCountsWithFilters = useCallback(() => {
+  // Recalculate counts whenever filters change
+  useEffect(() => {
     setFiles(prevFiles => prevFiles.map(file => {
       if (!file.rawData) return file;
-      const { counts } = processExcelData(file.rawData, filterState, wordFilterState);
+      const { counts } = processExcelData(file.rawData, wordFilterState);
       return { ...file, counts };
     }));
-  }, [filterState, wordFilterState]);
-
-  // Auto-update counts when state changes
-  useEffect(() => {
-    updateCountsWithFilters();
-  }, [filterState, wordFilterState, updateCountsWithFilters]);
+  }, [wordFilterState]);
 
   const handleRemoveFile = (id) => setFiles(prev => prev.filter(f => f.id !== id));
 
@@ -568,7 +501,6 @@ export default function Home() {
       <AnimatedBackground />
       
       <div className="relative z-10 max-w-5xl mx-auto px-4 py-12">
-        {/* Header */}
         <motion.header className="text-center mb-12" initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }}>
           <h1 className="text-4xl md:text-5xl font-bold mb-4 bg-clip-text text-transparent bg-gradient-to-r from-emerald-400 to-cyan-400">
             Excel Data Processor
@@ -576,7 +508,6 @@ export default function Home() {
           <p className="text-slate-400">Upload, filter, and analyze your Excel data dynamically</p>
         </motion.header>
 
-        {/* Upload Zone */}
         <div className="mb-8">
           <UploadZone 
             onFilesSelected={processAndAddFiles}
@@ -585,7 +516,6 @@ export default function Home() {
           />
         </div>
 
-        {/* Global Filter Edit Button */}
         {files.length > 0 && (
           <motion.div 
             className="flex justify-end mb-4"
@@ -604,7 +534,6 @@ export default function Home() {
           </motion.div>
         )}
 
-        {/* File List */}
         <div className="space-y-6">
           <AnimatePresence>
             {files.map(file => (
@@ -618,7 +547,6 @@ export default function Home() {
           </AnimatePresence>
         </div>
 
-        {/* Empty State */}
         {files.length === 0 && (
           <motion.div 
             className="text-center py-16 text-slate-500"
@@ -630,14 +558,11 @@ export default function Home() {
         )}
       </div>
 
-      {/* Filter Modal */}
       <AnimatePresence>
         {isModalOpen && (
           <FilterConfigModal
             isOpen={isModalOpen}
             onClose={() => setIsModalOpen(false)}
-            filterState={filterState}
-            setFilterState={setFilterState}
             wordFilterState={wordFilterState}
             setWordFilterState={setWordFilterState}
             uniqueWords={uniqueWords}
